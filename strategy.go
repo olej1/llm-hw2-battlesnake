@@ -1,6 +1,10 @@
 package main
 
-import "math"
+import (
+	"context"
+	"math"
+	"time"
+)
 
 type direction struct {
 	name string
@@ -17,21 +21,35 @@ var directions = [...]direction{
 
 const unavailable = 1 << 20
 
+// Territory can be enabled locally to reproduce its benchmark variants.
+const useDuelTerritory = false
+const duelSearchDepth = 5
+const duelSearchRadius = 4
+
 type position struct {
-	board       Board
-	mode        Mode
-	damage      int
-	food        []bool
-	hazard      []int
-	neighbors   [][4]int
-	release     []int
-	enemyRange  []int
-	enemyLength []int
-	threats     []int
+	board         Board
+	mode          Mode
+	duelTerritory bool
+	options       strategyOptions
+	turn          int
+	damage        int
+	food          []bool
+	hazard        []int
+	neighbors     [][4]int
+	release       []int
+	enemyRange    []int
+	enemyLength   []int
+	threats       []int
 }
 
 func chooseMove(mode Mode, request MoveRequest) string {
+	return chooseMoveWithOptions(mode, request, strategyOptions{duelDepth: duelSearchDepth, duelRadius: duelSearchRadius, standardEndgame: true})
+}
+
+func chooseMoveWithOptions(mode Mode, request MoveRequest, options strategyOptions) string {
 	state := newPosition(mode, request)
+	state.options, state.turn = options, request.Turn
+	state.options.tailSafety = options.tailSafety && isStandardDuel(request)
 	you := request.You
 	head := state.index(you.Head)
 	if head < 0 {
@@ -53,6 +71,16 @@ func chooseMove(mode Mode, request MoveRequest) string {
 			best, bestRisk, bestScore = directions[dir].name, risk, score
 		}
 	}
+	if len(request.Board.Snakes) == 2 && options.duelDepth >= 2 &&
+		(mode == Duels || (mode == Standard && options.standardEndgame)) {
+		budget := 8 * time.Millisecond
+		if options.duelDepth >= 4 {
+			budget = 12 * time.Millisecond
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+		return tacticalMove(ctx, mode, request, best, options)
+	}
 	return best
 }
 
@@ -61,7 +89,8 @@ func newPosition(mode Mode, request MoveRequest) position {
 	size := board.Width * board.Height
 	state := position{
 		board: board, mode: mode, damage: 14,
-		food: make([]bool, size), hazard: make([]int, size),
+		duelTerritory: useDuelTerritory && mode == Duels && isStandardDuel(request),
+		food:          make([]bool, size), hazard: make([]int, size),
 		neighbors: make([][4]int, size), release: make([]int, size),
 		enemyRange: make([]int, size), enemyLength: make([]int, size), threats: make([]int, size),
 	}
@@ -141,16 +170,42 @@ func (state *position) addThreats(snake Snake) {
 	for _, next := range state.neighbors[head] {
 		if next >= 0 && state.release[next] <= 1 && state.healthAfter(snake.Health, next) > 0 {
 			state.threats[next] = max(state.threats[next], len(snake.Body))
-			sources = append(sources, next)
+			if state.duelTerritory {
+				length := len(snake.Body)
+				var delayed []bool
+				if state.food[next] {
+					length++
+					delayed = state.growthDelay(snake)
+				}
+				state.addEnemyArrivals(state.distances([]int{next}, -1, delayed, 0), length)
+			} else {
+				sources = append(sources, next)
+			}
 		}
 	}
-	for cell, distance := range state.distances(sources, -1, nil) {
-		if distance < state.enemyRange[cell] {
-			state.enemyRange[cell], state.enemyLength[cell] = distance, len(snake.Body)
-		} else if distance != unavailable && distance == state.enemyRange[cell] {
-			state.enemyLength[cell] = max(state.enemyLength[cell], len(snake.Body))
+	if len(sources) > 0 {
+		state.addEnemyArrivals(state.distances(sources, -1, nil, 0), len(snake.Body))
+	}
+}
+
+func (state *position) addEnemyArrivals(arrivals []int, length int) {
+	for cell, turn := range arrivals {
+		if turn < state.enemyRange[cell] {
+			state.enemyRange[cell], state.enemyLength[cell] = turn, length
+		} else if turn != unavailable && turn == state.enemyRange[cell] {
+			state.enemyLength[cell] = max(state.enemyLength[cell], length)
 		}
 	}
+}
+
+func (state *position) growthDelay(snake Snake) []bool {
+	delayed := make([]bool, len(state.release))
+	for _, point := range snake.Body[:len(snake.Body)-1] {
+		if cell := state.index(point); cell >= 0 {
+			delayed[cell] = true
+		}
+	}
+	return delayed
 }
 
 func (state *position) moveRisk(you Snake, next int) int {
@@ -168,7 +223,7 @@ func (state *position) moveRisk(you Snake, next int) int {
 
 // distances counts the move to each source as turn one. A cell is traversable
 // from the turn its last occupying segment has moved away.
-func (state *position) distances(sources []int, avoid int, delayed []bool) []int {
+func (state *position) distances(sources []int, avoid int, delayed []bool, claimLength int) []int {
 	distance := make([]int, len(state.release))
 	for i := range distance {
 		distance[i] = unavailable
@@ -188,6 +243,10 @@ func (state *position) distances(sources []int, avoid int, delayed []bool) []int
 			release := state.release[next]
 			if delayed != nil && delayed[next] {
 				release++
+			}
+			if claimLength > 0 && (state.enemyRange[next] < arrival ||
+				(state.enemyRange[next] == arrival && state.enemyLength[next] >= claimLength)) {
+				continue
 			}
 			if release <= arrival {
 				distance[next] = arrival
@@ -218,27 +277,35 @@ func profile(mode Mode) weights {
 func (state *position) score(you Snake, next int) float64 {
 	weight := profile(state.mode)
 	length := len(you.Body)
+	if state.mode == Duels && state.options.phaseWeights > 0 {
+		enemyLength := 0
+		for _, opponent := range state.board.Snakes {
+			if opponent.ID != you.ID {
+				enemyLength = max(enemyLength, len(opponent.Body))
+			}
+		}
+		weight = phaseAdjustedWeights(weight, state.options.phaseWeights, state.turn, length, enemyLength)
+	}
 	health := state.healthAfter(you.Health, next)
 	var delayed []bool
 	if state.food[next] {
 		length++
-		delayed = make([]bool, len(state.release))
-		for _, point := range you.Body[:len(you.Body)-1] {
-			if cell := state.index(point); cell >= 0 {
-				delayed[cell] = true
-			}
-		}
+		delayed = state.growthDelay(you)
 	}
 
-	// Once the new head has moved, the old head is still the neck when the
-	// snake has a body. Treat it as occupied throughout this estimate.
+	// The baseline conservatively keeps the old head blocked. The territory
+	// experiment allows reachability once that segment has vacated.
 	avoid := -1
-	if length > 2 {
+	if length > 2 && !state.duelTerritory {
 		avoid = state.index(you.Head)
 	}
-	distance := state.distances([]int{next}, avoid, delayed)
+	distance := state.distances([]int{next}, avoid, delayed, 0)
+	var controlled []int
+	if state.duelTerritory {
+		controlled = state.distances([]int{next}, -1, delayed, length)
+	}
 	area, territory, exits := 0, 0.0, 0
-	nearestFood, nearestSafe := unavailable, unavailable
+	nearestFood, nearestSafe, firstClaimedFood := unavailable, unavailable, unavailable
 	for cell, turns := range distance {
 		if turns == unavailable {
 			continue
@@ -252,6 +319,9 @@ func (state *position) score(you Snake, next int) float64 {
 		}
 		if state.food[cell] {
 			nearestFood = min(nearestFood, turns)
+			if controlled != nil {
+				firstClaimedFood = min(firstClaimedFood, controlled[cell])
+			}
 		}
 		area++
 		share := 0.0
@@ -262,6 +332,9 @@ func (state *position) score(you Snake, next int) float64 {
 			share = 0.85
 		case turns == state.enemyRange[cell] && length == state.enemyLength[cell]:
 			share = 0.25
+		}
+		if controlled != nil && controlled[cell] == unavailable {
+			share *= 0.5
 		}
 		if hazard {
 			share *= 0.25
@@ -279,6 +352,13 @@ func (state *position) score(you Snake, next int) float64 {
 	if state.mode == Constrictor {
 		return score
 	}
+	if state.options.tailSafety && state.mode == Duels &&
+		length >= 8 && (exits <= 2 || area < 2*length) {
+		head := Point{next % state.board.Width, next / state.board.Width}
+		if !hasTailEscape(state.board, you, head, 6) {
+			score -= 85
+		}
+	}
 	if state.threats[next] > 0 && state.threats[next] < len(you.Body) {
 		score += 8
 	}
@@ -287,8 +367,14 @@ func (state *position) score(you Snake, next int) float64 {
 	urgency := 1 + float64(max(0, 70-you.Health))/27
 	if state.food[next] {
 		score += weight.meal * urgency
+	} else if controlled != nil && firstClaimedFood != unavailable {
+		score += weight.meal * urgency / float64(firstClaimedFood)
 	} else if nearestFood != unavailable {
-		score += weight.meal * urgency / float64(nearestFood)
+		bonus := weight.meal * urgency / float64(nearestFood)
+		if controlled != nil && health >= 18 {
+			bonus *= 0.45
+		}
+		score += bonus
 	}
 	if health < 21 && !state.food[next] {
 		if nearestFood == unavailable || nearestFood-1 > health {

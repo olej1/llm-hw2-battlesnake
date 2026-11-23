@@ -108,7 +108,7 @@ func newHandler(choose func(Mode, MoveRequest) string) http.Handler {
 				"color":      "#247d6e",
 				"head":       "default",
 				"tail":       "default",
-				"version":    "0.1.0",
+				"version":    "0.2.0",
 			})
 		case "/start", "/end":
 			w.WriteHeader(http.StatusOK)

@@ -92,15 +92,20 @@ func TestMoveLatency(t *testing.T) {
 	)
 	request.Board.Food = []Point{{0, 0}, {1, 2}, {10, 10}}
 	request.Board.Hazards = []Point{{0, 0}, {0, 1}, {0, 2}, {0, 3}}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
 	server := httptest.NewServer(newHandler(chooseMove))
 	defer server.Close()
 	client := server.Client()
 	client.Timeout = 500 * time.Millisecond
 	for _, mode := range []Mode{Duels, Standard, Royale, Constrictor} {
+		modeRequest := request
+		if mode == Duels {
+			modeRequest.Board.Snakes = request.Board.Snakes[:2]
+			modeRequest.Board.Hazards = nil
+		}
+		payload, err := json.Marshal(modeRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var maxLatency time.Duration
 		for range 64 {
 			start := time.Now()
@@ -120,5 +125,31 @@ func TestMoveLatency(t *testing.T) {
 			t.Fatalf("%s max latency %s", mode, maxLatency)
 		}
 		t.Logf("%s: max HTTP response %s across 64 moves", mode, maxLatency)
+	}
+}
+
+func TestDuelTerritoryDoesNotFlowThroughLosingGate(t *testing.T) {
+	you := testSnake("us", 80, Point{0, 0})
+	request := strategyRequest(you)
+	request.Board.Width, request.Board.Height = 5, 1
+	state := newPosition(Duels, request)
+	gate := state.index(Point{2, 0})
+	state.enemyRange[gate], state.enemyLength[gate] = 2, 5
+	for _, length := range []int{4, 5} {
+		if got := state.distances([]int{1}, -1, nil, length)[4]; got != unavailable {
+			t.Errorf("length %d reached cells past a gate contested by length 5 at turn 2", length)
+		}
+	}
+	if got := state.distances([]int{1}, -1, nil, 6)[4]; got != 4 {
+		t.Errorf("longer snake reached far end on turn %d, want 4", got)
+	}
+}
+
+func TestFirstMealDelaysOnlyRemainingBody(t *testing.T) {
+	snake := testSnake("us", 80, Point{2, 1}, Point{1, 1}, Point{0, 1})
+	state := newPosition(Duels, strategyRequest(snake))
+	delayed := state.growthDelay(snake)
+	if !delayed[state.index(snake.Head)] || !delayed[state.index(snake.Body[1])] || delayed[state.index(snake.Body[2])] {
+		t.Fatalf("growth must delay existing body cells while allowing the old tail to vacate")
 	}
 }
