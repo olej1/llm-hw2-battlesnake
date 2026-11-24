@@ -71,6 +71,9 @@ func chooseMoveWithOptions(mode Mode, request MoveRequest, options strategyOptio
 			best, bestRisk, bestScore = directions[dir].name, risk, score
 		}
 	}
+	if mode == Constrictor && bestRisk <= 1 {
+		return state.constrictorRouteMove(you, head, best, bestRisk)
+	}
 	if len(request.Board.Snakes) == 2 && options.duelDepth >= 2 &&
 		(mode == Duels || (mode == Standard && options.standardEndgame)) {
 		budget := 8 * time.Millisecond

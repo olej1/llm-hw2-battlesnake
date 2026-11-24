@@ -1,6 +1,6 @@
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod main.go api.go strategy.go duel_search.go deep_search.go strategy_experiments.go ./
+COPY go.mod main.go api.go strategy.go duel_search.go deep_search.go strategy_experiments.go constrictor_route.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /battlesnake .
 
 FROM scratch
