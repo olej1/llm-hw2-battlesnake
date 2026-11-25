@@ -152,3 +152,71 @@ func (solver *routeSolver) remainingBound(cell int) int {
 	}
 	return limit
 }
+
+// avoidContestedPassage compares routes before the opponent can claim a cell.
+func (state *position) avoidContestedPassage(r MoveRequest, fallback string) string {
+	if len(r.Board.Snakes) < 2 || r.Turn < 5 {
+		return fallback
+	}
+	current := -1
+	for _, d := range directions {
+		if d.name == fallback {
+			current = state.index(nextDuelHead(r.You, d))
+		}
+	}
+	if current < 0 || state.enemyRange[current] == unavailable {
+		return fallback
+	}
+	risk := state.moveRisk(r.You, current)
+	if risk > 1 {
+		return fallback
+	}
+	baseline := state.constrictorBeforeCutoff(r.You, current)
+	if baseline >= 3 {
+		return fallback
+	}
+	best, bestHorizon, bestScore := fallback, baseline, -1e99
+	for _, d := range directions {
+		cell := state.index(nextDuelHead(r.You, d))
+		if cell < 0 || cell == current || state.moveRisk(r.You, cell) > risk {
+			continue
+		}
+		horizon := state.constrictorBeforeCutoff(r.You, cell)
+		if horizon < baseline+2 {
+			continue
+		}
+		score := state.score(r.You, cell)
+		if horizon > bestHorizon || (horizon == bestHorizon && score > bestScore) {
+			best, bestHorizon, bestScore = d.name, horizon, score
+		}
+	}
+	return best
+}
+
+func (state *position) constrictorBeforeCutoff(you Snake, start int) int {
+	visited := make([]bool, len(state.release))
+	var walk func(int, int) int
+	walk = func(cell, turn int) int {
+		if state.release[cell] > 0 || visited[cell] || state.enemyRange[cell] < turn ||
+			(state.enemyRange[cell] == turn && state.enemyLength[cell] >= len(you.Body)) {
+			return turn - 1
+		}
+		if turn == 4 {
+			return turn
+		}
+		visited[cell] = true
+		best := turn
+		for _, next := range state.neighbors[cell] {
+			if next < 0 {
+				continue
+			}
+			best = max(best, walk(next, turn+1))
+			if best == 4 {
+				break
+			}
+		}
+		visited[cell] = false
+		return best
+	}
+	return walk(start, 1)
+}

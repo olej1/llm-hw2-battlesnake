@@ -72,7 +72,8 @@ func chooseMoveWithOptions(mode Mode, request MoveRequest, options strategyOptio
 		}
 	}
 	if mode == Constrictor && bestRisk <= 1 {
-		return state.constrictorRouteMove(you, head, best, bestRisk)
+		move := state.constrictorRouteMove(you, head, best, bestRisk)
+		return state.avoidContestedPassage(request, move)
 	}
 	if len(request.Board.Snakes) == 2 && options.duelDepth >= 2 &&
 		(mode == Duels || (mode == Standard && options.standardEndgame)) {
@@ -81,8 +82,13 @@ func chooseMoveWithOptions(mode Mode, request MoveRequest, options strategyOptio
 			budget = 12 * time.Millisecond
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		defer cancel()
-		return tacticalMove(ctx, mode, request, best, options)
+		best = tacticalMove(ctx, mode, request, best, options)
+		cancel()
+		if mode == Duels && len(you.Body) >= 12 {
+			leadCtx, cancelLead := context.WithTimeout(context.Background(), 12*time.Millisecond)
+			defer cancelLead()
+			return protectDuelLead(leadCtx, request, best)
+		}
 	}
 	return best
 }

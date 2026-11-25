@@ -219,3 +219,53 @@ func nextDuelHead(snake Snake, move direction) Point {
 func insideDuelBoard(board Board, point Point) bool {
 	return point.X >= 0 && point.X < board.Width && point.Y >= 0 && point.Y < board.Height
 }
+
+// protectDuelLead checks deeper when a long snake may close its own exit.
+func protectDuelLead(ctx context.Context, r MoveRequest, fallback string) string {
+	if len(r.You.Body) < 12 {
+		return fallback
+	}
+	snakes, ok := duelSnakes(r)
+	if !ok || len(snakes[0].Body) < len(snakes[1].Body)+2 {
+		return fallback
+	}
+	var legal int
+	var preferred Point
+	for _, d := range directions {
+		next := nextDuelHead(r.You, d)
+		if duelCanMoveAlone(r.Board, r.You, next) {
+			legal++
+		}
+		if d.name == fallback {
+			preferred = next
+		}
+	}
+	if legal < 2 || !insideDuelBoard(r.Board, preferred) {
+		return fallback
+	}
+	projected := advanceDuelSnake(r.You, preferred, slices.Contains(r.Board.Food, preferred))
+	exits := 0
+	for _, d := range directions {
+		if duelCanMoveAlone(r.Board, projected, nextDuelHead(projected, d)) {
+			exits++
+		}
+	}
+	if exits > 2 {
+		return fallback
+	}
+	depth := min(7, snakes[0].Health-1, snakes[1].Health-1)
+	if depth <= 3 {
+		return fallback
+	}
+	candidate, outcome := bestDuelMove(ctx, r.Board, snakes, fallback, depth)
+	if ctx.Err() != nil || outcome < duelContinues {
+		return fallback
+	}
+	return candidate
+}
+
+func duelCanMoveAlone(board Board, snake Snake, head Point) bool {
+	return insideDuelBoard(board, head) &&
+		(snake.Health > 1 || slices.Contains(board.Food, head)) &&
+		!slices.Contains(snake.Body[:len(snake.Body)-1], head)
+}
