@@ -73,7 +73,11 @@ func chooseMoveWithOptions(mode Mode, request MoveRequest, options strategyOptio
 	}
 	if mode == Constrictor && bestRisk <= 1 {
 		move := state.constrictorRouteMove(you, head, best, bestRisk)
-		return state.avoidContestedPassage(request, move)
+		move = state.avoidContestedPassage(request, move)
+		if options.constrictorRollout {
+			return state.constrictorRolloutMove(request, move)
+		}
+		return move
 	}
 	if len(request.Board.Snakes) == 2 && options.duelDepth >= 2 &&
 		(mode == Duels || (mode == Standard && options.standardEndgame)) {

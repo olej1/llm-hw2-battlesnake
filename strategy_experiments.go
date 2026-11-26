@@ -6,11 +6,12 @@ import (
 )
 
 type strategyOptions struct {
-	duelDepth       int
-	duelRadius      int
-	phaseWeights    int
-	tailSafety      bool
-	standardEndgame bool
+	constrictorRollout bool
+	duelDepth          int
+	duelRadius         int
+	phaseWeights       int
+	tailSafety         bool
+	standardEndgame    bool
 }
 
 func tacticalMove(ctx context.Context, mode Mode, request MoveRequest, fallback string, options strategyOptions) string {

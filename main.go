@@ -11,6 +11,7 @@ import (
 
 func main() {
 	var options strategyOptions
+	flag.BoolVar(&options.constrictorRollout, "constrictor-rollout", true, "simulate alternative routes in Constrictor")
 	flag.IntVar(&options.duelDepth, "duel-depth", duelSearchDepth, "maximum duel search: 0 or 2 to 6")
 	flag.IntVar(&options.duelRadius, "duel-search-radius", duelSearchRadius, "Manhattan distance for search past three turns in Duels; 0 uses twice the depth")
 	flag.IntVar(&options.phaseWeights, "phase-weights", 0, "phase-based food and territory weights: 0, 1, or 2")
